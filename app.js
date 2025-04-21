@@ -23,7 +23,9 @@ const activePolls = {};
 const communityUsers = new Map();
 
 io.on("connection", (socket) => {
-  console.log(`User connected: ${socket.id}`);
+  // Get the user ID from the auth data
+  const userId = socket.handshake.auth.userId || socket.id;
+  console.log(`User connected: ${userId} (Socket ID: ${socket.id})`);
 
   // Handle community joining
   socket.on("joinCommunity", ({ communityId }) => {
@@ -35,11 +37,11 @@ io.on("connection", (socket) => {
     }
 
     // Add user to community
-    communityUsers.get(communityId).add(socket.id);
+    communityUsers.get(communityId).add(userId);
 
     // Notify others in the community
-    socket.to(communityId).emit("userJoined", { userId: socket.id });
-    console.log(`User ${socket.id} joined community: ${communityId}`);
+    socket.to(communityId).emit("userJoined", { userId });
+    console.log(`User ${userId} joined community: ${communityId}`);
   });
 
   // Handle community leaving
@@ -47,17 +49,18 @@ io.on("connection", (socket) => {
     socket.leave(communityId);
 
     if (communityUsers.has(communityId)) {
-      communityUsers.get(communityId).delete(socket.id);
-      socket.to(communityId).emit("userLeft", { userId: socket.id });
+      communityUsers.get(communityId).delete(userId);
+      socket.to(communityId).emit("userLeft", { userId });
     }
-    console.log(`User ${socket.id} left community: ${communityId}`);
+    console.log(`User ${userId} left community: ${communityId}`);
   });
 
   // Handle standard text/image messages
   socket.on("sendMessage", ({ communityId, message }) => {
     console.log(
       `Message received in community ${communityId} from ${socket.id}:`,
-      message
+      message.type,
+      message.content ? message.content.substring(0, 100) + "..." : "No content"
     );
 
     // Handle poll messages differently
@@ -78,17 +81,17 @@ io.on("connection", (socket) => {
         }
 
         // Broadcast the poll to all clients
-        io.to(communityId).emit("newMessage", {
+        socket.broadcast.to(communityId).emit("newMessage", {
           ...message,
-          pollData: {
-            question: pollData.question,
-            options: pollData.options,
-            votes: activePolls[pollId].votes,
-            totalVoters: activePolls[pollId].voters.size,
-          },
+          isSent: false, // Messages received by others should have isSent false
+        });
+        // Send back to sender with isSent true
+        socket.emit("newMessage", {
+          ...message,
+          isSent: true,
         });
       } catch (error) {
-        console.error("Error processing poll message:", error);
+        console.error("Error processing poll data:", error);
       }
     } else if (message.type === "cast_vote") {
       // Handle vote messages
@@ -132,8 +135,22 @@ io.on("connection", (socket) => {
         }
       }
     } else {
-      // Handle regular messages
-      io.to(communityId).emit("newMessage", message);
+      // Handle regular messages (text, image, document)
+      console.log(
+        `Broadcasting ${message.type} message to community ${communityId}`
+      );
+
+      // Broadcast to others with isSent false
+      socket.broadcast.to(communityId).emit("newMessage", {
+        ...message,
+        isSent: false,
+      });
+
+      // Send back to sender with isSent true
+      socket.emit("newMessage", {
+        ...message,
+        isSent: true,
+      });
     }
   });
 
@@ -173,12 +190,12 @@ io.on("connection", (socket) => {
   });
 
   socket.on("disconnect", () => {
-    console.log(`User disconnected: ${socket.id}`);
+    console.log(`User disconnected: ${userId}`);
     // Clean up user from all communities
     communityUsers.forEach((users, communityId) => {
-      if (users.has(socket.id)) {
-        users.delete(socket.id);
-        io.to(communityId).emit("userLeft", { userId: socket.id });
+      if (users.has(userId)) {
+        users.delete(userId);
+        io.to(communityId).emit("userLeft", { userId });
       }
     });
   });
